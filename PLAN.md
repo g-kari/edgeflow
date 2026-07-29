@@ -21,6 +21,11 @@
 **実測 2 — その式評価も動いた（PoC-2 完了）。**
 `getExpressionCode()` が **AST 変換のみで eval を使わない**ことを利用し、コード生成と実行を分離しました。全式を「動的 Worker のモジュールのトップレベル関数」として埋め込むことで、**実行時には `new Function` も `eval` も一切不要**になります。5 式すべてが正しく評価され、しかも **n8n 本体と同一のサンドボックスがそのまま機能**しました。→ `experiments/expression-worker-loader/`
 
+**実測 3 — さらに Worker Loader すら不要になった（採用構成）。**
+動的 Worker が要る理由は `new Function` の禁止だけでした。ならばコード生成をやめればよい、ということで `getExpressionCode()` の出力を `esprima-next` で AST 化し、**ツリーウォーク型インタプリタで直接解釈**する方式に切り替えました。**単一 Worker で完結し、gzip 627.92 KiB、非同期境界ゼロ。** n8n の意味論は癖まで再現しています。→ `experiments/single-worker-interpreter/`
+
+**これにより最大の残存リスクが消えました。** Worker Loader はローカル workerd でしか検証できず（`unsafe_eval` がローカルで使えなかった前例あり）、本番挙動が未確認という弱点を抱えていました。単一 Worker 方式は**通常の Worker として動く**ため、この不確実性がありません。
+
 **経路 A（Containers に n8n 本体を載せる）は採用しません。** 技術的には成立する見込みでしたが、コスト構造が目的に合いませんでした（§6.1）。常時起動で月 $32〜53 かかり、同等の VPS に Docker で立てる方が安いためです。「Cloudflare で動かす」という目的とコストを同時に満たすのは経路 B だけでした。
 
 **永続層は D1 を使い、外部 PostgreSQL（Neon）は不要**です。自前ランタイムなので Postgres に縛られる理由がなく、D1 は Workers Paid に読み取り 250 億行・書き込み 5,000 万行・ストレージ 5GB が含まれます。**総額は Workers Paid の $5/月のみ**に収まります。
@@ -765,43 +770,54 @@ Uncaught Error: Dynamic require of "fs" is not supported
 3. CI に **`wrangler check startup`** を組み込む（§3.1 の非決定的 startup 超過への防御）
 4. **ライセンス対応**: Sustainable Use License の写しと**改変注記**をリポジトリに配置。`.ee` 由来コードには触れない方針を明文化
 
-### Phase 1 — 実行エンジンの最小ループ ✅ 中核達成（2026-07-30）
+### Phase 1 — 実行エンジンの最小ループ ✅ 達成（2026-07-30）
 
-**アーキテクチャが端から端まで通りました。** → `experiments/engine-in-dynamic-worker/`
+**アーキテクチャが端から端まで通り、さらに単純化されました。**
 
-採った構成は **「実行エンジンごと動的 Worker の中に入れる」**です。PoC-2 で式評価は動きましたが動的 Worker への呼び出しは非同期で、n8n-workflow の式評価インタフェースは同期という不一致が残っていました。エンジンごと内側に入れることで**非同期境界は動的 Worker を生成する 1 回だけ**になり、エンジン内部の式評価はテーブル参照の同期処理で済みます。
+まず「実行エンジンごと動的 Worker に入れる」構成で通しました（→ `experiments/engine-in-dynamic-worker/`）。エンジンバンドルは gzip 582.80 KiB、Worker Loader は**少なくとも 20MB のモジュールを受け付ける**ことも確認しています。
+
+**しかしその後、Worker Loader 自体が不要と判明しました。** 動的 Worker が要る理由は `new Function` の禁止だけだったので、コード生成をやめてインタプリタにすれば単一 Worker で完結します（→ `experiments/single-worker-interpreter/`）。**こちらを採用構成とします。**
+
+| | 動的 Worker 方式 | **単一 Worker 方式（採用）** |
+|---|---|---|
+| gzip サイズ | 582.80 KiB + 外側 Worker | **627.92 KiB（全部込み）** |
+| Worker Loader | 必須 | **不要** |
+| 本番での動作確認 | **未確認（最大のリスク）** | 通常の Worker なので確実 |
+| 非同期境界 | 動的 Worker 生成の 1 回 | **なし** |
+| 実装量 | 少ない | インタプリタ約 260 行 |
+
+**式評価の経路**
 
 ```
-外側 Worker                          動的 Worker（Worker Loader）
-workflow JSON → 式を収集              ┌ engine.js … n8n-workflow バンドル(3.45MB)
-  → tournament でコンパイル ─────────▶ └ main.js   … 式テーブル + new Workflow() 実行
-    （AST 変換のみ / eval なし）                    ★ 式評価は同期
+tournament.getExpressionCode(expr)   ← AST 変換のみ。eval なし
+        ↓  JS ソース文字列
+esprima.parseScript(...)             ← AST 化。eval なし
+        ↓  AST
+interpreter.run(ast, data, E)        ← ツリーウォーク。完全に同期
 ```
 
-エンジンは全ワークフロー共通、**式テーブルだけがワークフローごとに変わる**ため、`env.LOADER.get(id, ...)` の id をワークフロー ID + 版数にすれば動的 Worker を使い回せます。
+**検証結果**: Node 側で 17 式すべて期待どおり。workerd 側でも n8n 本体のサンドボックス（`ThisSanitizer` / `PrototypeSanitizer` / `DollarSignValidator`）込みで一致し、`new Workflow()` によるパラメータ正規化も経ています。
 
-**達成した実測値**
+**n8n の意味論を癖まで再現**しています。たとえば `filter(Boolean)` は `undefined` になりますが、これは実際の n8n でも同じです（`ThisSanitizer` が `Boolean` を `("Boolean" in this ? this : global).Boolean` に書き換え、`global` が空オブジェクトのため）。**n8n の式から素の JS グローバルには触れません。**
 
-| 項目 | 値 |
-|---|---|
-| エンジンバンドル | 3,450,205 bytes / **gzip 582.80 KiB** |
-| Worker Loader のモジュール上限 | **少なくとも 20MB まで成功**（512KB〜20MB を検証） |
-| 解決できた式 | `"hello " + $json.who` / `$json.n * 2` / `[1,2,3].map(x => x + $json.n).join("\|")` すべて正解 |
+**セキュリティは三重**: ① tournament の AST フック（n8n 本体と同一）② インタプリタの `BLOCKED_KEYS`（`__proto__` / `constructor` 等）③ `SAFE_GLOBALS` の allowlist（`globalThis` を晒さないため Worker のバインディングや `fetch` に到達不可）。加えて**インタプリタは解釈できるノード型しか実行しない**ため、既定が拒否側に倒れています。
 
-**ビルドパイプラインが確定しました**: エンジンは **`wrangler deploy --dry-run --outdir=dist`** でバンドルします（**Cloudflare 認証不要**）。外側 Worker は `rules` の Text ローダーで文字列として取り込みます。
+**ビルドパイプラインが確定しました**: **`wrangler deploy --dry-run --outdir=dist`**（**Cloudflare 認証不要**）。**esbuild で事前バンドルしてはいけません** — Node 組み込みを `external` にするとネストした `require()` が `__require` シムに落ちて `Dynamic require of "assert" is not supported` で必ず失敗します。
 
 **判明した設計制約**
 
-- **wrangler は `export default` が無いと IIFE を吐き export が消える。** バンドラの出力形式に依存しないよう **`globalThis` 経由で受け渡す**こと
 - **n8n は node description の `properties` に宣言のないパラメータを正規化で削除する。** ノード実装では description の宣言が必須
+- （動的 Worker 方式を使う場合のみ）wrangler は `export default` が無いと IIFE を吐き export が消えるため、`globalThis` 経由で受け渡すこと
 
 **残り**
 
-1. 式拡張関数（`.toSnakeCase()` 等）と `$now` / `$today` の動作確認
-2. **ワークフローのグラフ走査と実際のノード実行**（現状はパラメータ解決まで。ノード間のデータ受け渡しは未実装）
-3. 動的 Worker の生成レイテンシ実測とキャッシュ戦略の詰め
+1. **ワークフローのグラフ走査と実際のノード実行**（現状はパラメータ解決まで。ノード間のデータ受け渡しは未実装）
+2. 式拡張関数（`.toSnakeCase()` 等）と `$now` / `$today` の組み込み
+3. インタプリタの実行性能測定
 
-**⚠️ 撤退ライン**: startup が 1 秒に収まらない、またはバンドルが Paid の 10MB を超える見込みが立った時点で、`n8n-workflow` 全体の取り込みを諦め、式評価（tournament）とワークフロー JSON の型定義のみを借りて実行グラフの走査を自前で書く方向へ切り替えます。**現時点では gzip 582.80 KiB で余裕があります。**
+**⚠️ 撤退ライン**: startup が 1 秒に収まらない、またはバンドルが Paid の 10MB を超える見込みが立った時点で、`n8n-workflow` 全体の取り込みを諦める。**現時点では gzip 627.92 KiB で余裕があります。**
+
+**Worker Loader の残る用途**: Code ノード（ユーザーが書く任意の JS）はループやクラス定義を含みうるため、インタプリタでは荷が重い可能性があります。そこだけ Worker Loader を使う選択肢は残します。
 
 ### Phase 2 — 永続層とステート
 
@@ -815,7 +831,7 @@ workflow JSON → 式を収集              ┌ engine.js … n8n-workflow バ�
 
 1. 優先順位: Webhook / Schedule / HTTP Request / Set / IF / Switch / Merge / Split In Batches
 2. **declarative-style ノードの description を汎用 fetch ランナーで実行する仕組み**（§5.3）。ここが対応ノード数を一気に伸ばす鍵
-3. Code ノードは **Worker Loader** で実装（PoC-2 と同じ仕組み。`globalOutbound: null` で egress 遮断）
+3. Code ノードは **Worker Loader** で実装（`globalOutbound: null` で egress 遮断）。式インタプリタはループやクラスを扱わないため、任意 JS はこちらに寄せる
 4. スケジュールは **Cron Triggers**（Paid 250）+ DO Alarms
 5. **同時アウトバウンド接続 6** の制約に合わせて並列度を絞る
 
@@ -863,7 +879,7 @@ workflow JSON → 式を収集              ┌ engine.js … n8n-workflow バ�
 1. **式拡張関数**（`.toSnakeCase()` 等、`@n8n/expression-runtime` の extensions）が動的 Worker 内で使えるか。PoC-2 は拡張なしの素の式のみ検証済み
 2. **`$now` / `$today`（Luxon 依存）の挙動。** Workers のタイマーが「最後の I/O 時点」で止まる仕様との相互作用
 3. **動的 Worker の生成コスト。** `env.LOADER.get()` のキャッシュがどこまで効くか、ワークフロー更新時の無効化戦略
-4. **Worker Loader の本番挙動。** PoC-2 はローカル workerd での検証であり、**Cloudflare 本番ネットワーク上では未検証**。`unsafe_eval` がローカルで使えなかった前例があるため要確認
+4. **Worker Loader の本番挙動。** ローカル workerd でのみ検証済み。`unsafe_eval` がローカルで使えなかった前例があるため要確認。**ただし採用構成（単一 Worker + インタプリタ）は Worker Loader を使わないため、これは Code ノード実装時まで先送りできます**
 5. **`n8n-workflow` を実際のワークフロー実行まで通したときのバンドルサイズと startup 時間**
 6. **`process.version` が Workers 上で返す具体値** — 一次・第三者いずれにも記載なし。起動時 semver ガードを持つライブラリの可否に影響
 7. **`enable_nodejs_fs_module` の既定 compat date** — capnp 2025-09-15 vs docs 2025-09-01 で食い違い。安全側に 2025-09-15 以降を採用中

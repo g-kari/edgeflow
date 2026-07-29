@@ -1,0 +1,6 @@
+{
+  "name": "cf-n8n-single-worker",
+  "main": "src.js",
+  "compatibility_date": "2025-09-15",
+  "compatibility_flags": ["nodejs_compat"]
+}

@@ -1,0 +1,32 @@
+{
+ "mode": "single-worker (no Worker Loader)",
+ "nodeNames": [
+  "Set"
+ ],
+ "resolved": {
+  "greeting": {
+   "value": "hello gizen",
+   "errors": []
+  },
+  "doubled": {
+   "value": 14,
+   "errors": []
+  },
+  "listed": {
+   "value": "8|9|10",
+   "errors": []
+  },
+  "chained": {
+   "value": "fallback",
+   "errors": []
+  },
+  "filtered": {
+   "errors": [
+    "undefined is not a function"
+   ]
+  },
+  "evil": {
+   "blocked": "Cannot access \"constructor\" due to security concerns"
+  }
+ }
+}
