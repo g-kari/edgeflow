@@ -1,0 +1,41 @@
+{
+ "engineBytes": 3450205,
+ "collected": [
+  "{{ \"hello \" + $json.who }}",
+  "{{ $json.n * 2 }}",
+  "{{ [1,2,3].map(x => x + $json.n).join(\"|\") }}"
+ ],
+ "rejected": {},
+ "engine": {
+  "workflowConstructed": true,
+  "nodeNames": [
+   "Set"
+  ],
+  "diag": {
+   "paramKeys": [
+    "greeting",
+    "doubled",
+    "listed"
+   ],
+   "tableKeys": [
+    "{{ \"hello \" + $json.who }}",
+    "{{ $json.n * 2 }}",
+    "{{ [1,2,3].map(x => x + $json.n).join(\"|\") }}"
+   ]
+  },
+  "resolved": {
+   "greeting": {
+    "value": "hello gizen",
+    "errors": []
+   },
+   "doubled": {
+    "value": 14,
+    "errors": []
+   },
+   "listed": {
+    "value": "8|9|10",
+    "errors": []
+   }
+  }
+ }
+}

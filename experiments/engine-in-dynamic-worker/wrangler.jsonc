@@ -1,0 +1,8 @@
+{
+  "name": "poc3-engine-in-dynamic-worker",
+  "main": "src.js",
+  "compatibility_date": "2025-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "rules": [{ "type": "Text", "globs": ["**/*.txt"], "fallthrough": true }]
+}

@@ -1,0 +1,35 @@
+{
+ "hasLoader": true,
+ "results": {
+  "512KB": {
+   "actualBytes": 524373,
+   "ok": true,
+   "body": "3"
+  },
+  "1MB": {
+   "actualBytes": 1048765,
+   "ok": true,
+   "body": "3"
+  },
+  "3MB": {
+   "actualBytes": 3145875,
+   "ok": true,
+   "body": "3"
+  },
+  "5MB": {
+   "actualBytes": 5243131,
+   "ok": true,
+   "body": "3"
+  },
+  "10MB": {
+   "actualBytes": 10486033,
+   "ok": true,
+   "body": "3"
+  },
+  "20MB": {
+   "actualBytes": 20971599,
+   "ok": true,
+   "body": "3"
+  }
+ }
+}

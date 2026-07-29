@@ -765,14 +765,43 @@ Uncaught Error: Dynamic require of "fs" is not supported
 3. CI に **`wrangler check startup`** を組み込む（§3.1 の非決定的 startup 超過への防御）
 4. **ライセンス対応**: Sustainable Use License の写しと**改変注記**をリポジトリに配置。`.ee` 由来コードには触れない方針を明文化
 
-### Phase 1 — 実行エンジンの最小ループ
+### Phase 1 — 実行エンジンの最小ループ ✅ 中核達成（2026-07-30）
 
-1. PoC-2 の評価器を `ExpressionEvaluator` 実装として整理し、`Tournament.setEvaluator()` で差し込む（**フォーク不要**）
-2. `n8n-workflow` の `Workflow` クラスで最小ワークフロー（Manual Trigger → Set → HTTP Request）を実行
-3. **バンドルサイズと startup 時間を毎回計測**。570KB gzip / 1 秒 startup の余裕がどこで食い潰されるか追う
-4. 動的 Worker のキャッシュ戦略を決める（`env.LOADER.get(id, ...)` の id をワークフロー ID + 版数にして使い回す）
+**アーキテクチャが端から端まで通りました。** → `experiments/engine-in-dynamic-worker/`
 
-**⚠️ 撤退ライン**: startup が 1 秒に収まらない、またはバンドルが Paid の 10MB を超える見込みが立った時点で、`n8n-workflow` 全体の取り込みを諦め、式評価（tournament）とワークフロー JSON の型定義のみを借りて実行グラフの走査を自前で書く方向へ切り替えます。
+採った構成は **「実行エンジンごと動的 Worker の中に入れる」**です。PoC-2 で式評価は動きましたが動的 Worker への呼び出しは非同期で、n8n-workflow の式評価インタフェースは同期という不一致が残っていました。エンジンごと内側に入れることで**非同期境界は動的 Worker を生成する 1 回だけ**になり、エンジン内部の式評価はテーブル参照の同期処理で済みます。
+
+```
+外側 Worker                          動的 Worker（Worker Loader）
+workflow JSON → 式を収集              ┌ engine.js … n8n-workflow バンドル(3.45MB)
+  → tournament でコンパイル ─────────▶ └ main.js   … 式テーブル + new Workflow() 実行
+    （AST 変換のみ / eval なし）                    ★ 式評価は同期
+```
+
+エンジンは全ワークフロー共通、**式テーブルだけがワークフローごとに変わる**ため、`env.LOADER.get(id, ...)` の id をワークフロー ID + 版数にすれば動的 Worker を使い回せます。
+
+**達成した実測値**
+
+| 項目 | 値 |
+|---|---|
+| エンジンバンドル | 3,450,205 bytes / **gzip 582.80 KiB** |
+| Worker Loader のモジュール上限 | **少なくとも 20MB まで成功**（512KB〜20MB を検証） |
+| 解決できた式 | `"hello " + $json.who` / `$json.n * 2` / `[1,2,3].map(x => x + $json.n).join("\|")` すべて正解 |
+
+**ビルドパイプラインが確定しました**: エンジンは **`wrangler deploy --dry-run --outdir=dist`** でバンドルします（**Cloudflare 認証不要**）。外側 Worker は `rules` の Text ローダーで文字列として取り込みます。
+
+**判明した設計制約**
+
+- **wrangler は `export default` が無いと IIFE を吐き export が消える。** バンドラの出力形式に依存しないよう **`globalThis` 経由で受け渡す**こと
+- **n8n は node description の `properties` に宣言のないパラメータを正規化で削除する。** ノード実装では description の宣言が必須
+
+**残り**
+
+1. 式拡張関数（`.toSnakeCase()` 等）と `$now` / `$today` の動作確認
+2. **ワークフローのグラフ走査と実際のノード実行**（現状はパラメータ解決まで。ノード間のデータ受け渡しは未実装）
+3. 動的 Worker の生成レイテンシ実測とキャッシュ戦略の詰め
+
+**⚠️ 撤退ライン**: startup が 1 秒に収まらない、またはバンドルが Paid の 10MB を超える見込みが立った時点で、`n8n-workflow` 全体の取り込みを諦め、式評価（tournament）とワークフロー JSON の型定義のみを借りて実行グラフの走査を自前で書く方向へ切り替えます。**現時点では gzip 582.80 KiB で余裕があります。**
 
 ### Phase 2 — 永続層とステート
 

@@ -1,0 +1,13 @@
+{
+  "name": "engine-in-dynamic-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:engine": "cd engine && wrangler deploy --dry-run --outdir=dist && cp dist/engine-entry.js ../engine-bundle.txt",
+    "dev": "wrangler dev"
+  },
+  "dependencies": {
+    "n8n-workflow": "2.16.0",
+    "@n8n/tournament": "1.8.1"
+  }
+}
