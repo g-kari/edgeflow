@@ -1,0 +1,9 @@
+{
+  "name": "expression-worker-loader-poc",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@n8n/tournament": "1.8.1",
+    "n8n-workflow": "2.16.0"
+  }
+}

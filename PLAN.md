@@ -9,24 +9,21 @@
 
 ## 1. 結論
 
-**Workers 単体で n8n 本体を動かすことは原理的に不可能です。** バンドルサイズ・メモリ・ネイティブアドオン・`child_process`・`node:vm`・永続ディスク・実行時 npm install という 7 つの独立したブロッカーが同時に効きます（§5.1）。
+**方針は経路 B（Workers ネイティブの n8n 互換ランタイム）に確定しました。** 2026-07-30 のユーザー判断です。
 
-しかし調査の過程で、**当初の想定より遥かに重要な発見が 2 つ**ありました。
+**Workers 単体で n8n 本体をそのまま動かすことは原理的に不可能です。** バンドルサイズ・メモリ・ネイティブアドオン・`child_process`・`node:vm`・永続ディスク・実行時 npm install という 7 つの独立したブロッカーが同時に効きます（§5.1）。したがって「n8n を移植する」のではなく、**n8n のワークフロー JSON を入力フォーマットとして受け取り、Workers 上の自前ランタイムで実行する**方向を採ります。
 
-**発見 1 — `n8n-workflow` は workerd 上で動く。【実測】**
-`n8n-workflow@2.16.0` を esbuild でバンドルすると **gzip 570,053 bytes**（Paid 上限 10MB に対し余裕）、workerd 上で **`new Workflow()` の構築に成功**しました。詰まるのは式評価のみで、その原因は `isolated-vm`（ネイティブアドオン）ではなく **`@n8n/tournament` 内の `new Function`**（Workers のランタイムポリシーによる動的コード生成禁止）です。そして **Worker Loader バインディングによる動的コード実行はローカル workerd で成功しました。** つまり回避経路が実在します。
+この方針を支えているのが、調査中に実施した 2 つの実測です。
 
-**発見 2 — Containers 経路には未検証の致命的リスクがある。⚠️**
-Containers のディスクは公式に **完全に ephemeral** と明記されており、n8n は外部 PostgreSQL が必須になります。ところが **コンテナからの生 TCP アウトバウンド（Postgres 5432）が可能かどうか、Cloudflare 自身のドキュメント間で記述が矛盾しています。** ここが駄目なら Containers 上の n8n は成立しません。
+**実測 1 — `n8n-workflow` は workerd 上で動く。**
+`n8n-workflow@2.16.0` をバンドルすると **gzip 570,053 bytes**（Paid 上限 10MB に対し 5.7%）、workerd 上で **`new Workflow()` の構築に成功**しました。詰まるのは式評価だけで、その原因は `isolated-vm`（ネイティブアドオン）ではなく **`@n8n/tournament` 内の `new Function`**、つまり Workers のランタイムポリシーによる動的コード生成禁止でした。→ `experiments/workerd-n8n-workflow/`
 
-したがって、**方針を決める前に 2 つの PoC を並行実施する**のが本計画の出発点です。
+**実測 2 — その式評価も動いた（PoC-2 完了）。**
+`getExpressionCode()` が **AST 変換のみで eval を使わない**ことを利用し、コード生成と実行を分離しました。全式を「動的 Worker のモジュールのトップレベル関数」として埋め込むことで、**実行時には `new Function` も `eval` も一切不要**になります。5 式すべてが正しく評価され、しかも **n8n 本体と同一のサンドボックスがそのまま機能**しました。→ `experiments/expression-worker-loader/`
 
-| PoC | 検証内容 | これが失敗したら |
-|---|---|---|
-| **PoC-1** | Container → 外部 PostgreSQL:5432 への生 TCP 接続 | 経路 A（Containers）が全滅 |
-| **PoC-2** | `@n8n/tournament` の `FunctionEvaluator` を Worker Loader 化して式評価を通す | 経路 B（Workers ネイティブ）の難度が跳ね上がる |
+**経路 A（Containers に n8n 本体を載せる）は採用しません。** 技術的には成立する見込みでしたが、コスト構造が目的に合いませんでした（§6.1）。常時起動で月 $32〜53 かかり、同等の VPS に Docker で立てる方が安いためです。「Cloudflare で動かす」という目的とコストを同時に満たすのは経路 B だけでした。
 
-**推奨する最終形は経路 B**（Workers ネイティブの n8n 互換ランタイム）です。経路 A は「動く n8n を早期に確保し、経路 B の互換性検証の正解データを提供するリファレンス環境」として位置づけます。理由は §6 に述べます。
+**永続層は D1 を使い、外部 PostgreSQL（Neon）は不要**です。自前ランタイムなので Postgres に縛られる理由がなく、D1 は Workers Paid に読み取り 250 億行・書き込み 5,000 万行・ストレージ 5GB が含まれます。**総額は Workers Paid の $5/月のみ**に収まります。
 
 ---
 
@@ -557,11 +554,60 @@ const w = await env.LOADER.get('expr-1', async () => ({
 
 結果: `{"hasLoader": true, "dynamicResult": "3"}` — **ローカル workerd で動的コード実行に成功しました。**
 
-### 4.5 この実測から導かれること
+### 4.5 ★ PoC-2 完了 — 式評価も Workers 上で動いた【実測】
 
-**【推測・確度高】** `@n8n/tournament` の `FunctionEvaluator` を Worker Loader ベースに差し替えれば、**n8n の式評価は Workers 上で動かせる見込みがあります。** 同じ仕組みで **Code ノードの JS 実行も Task Runner の代替として実装可能**で、`globalOutbound` による egress 制御ができる分、**むしろ n8n の external task runner より綺麗にサンドボックス化できます。**
+再現用ファイルは **`experiments/expression-worker-loader/`**、実行結果は同ディレクトリの `result.json` にあります。
 
-**残る課題**: `new Function` は同期、Worker Loader は非同期です。tournament の同期 API を非同期化する改造が必要になります。これが PoC-2 の核心です。
+**当初「同期 API を非同期化する改造が必要」と見ていましたが、それは不要でした。** `getExpressionCode()` が **AST 変換のみで eval を使わない**ことを利用し、コード生成と実行を分離すれば済みます。
+
+1. **コンパイル段階（同期・eval 不要）** — 全式に `getExpressionCode()` をかけ、関数本体のソース文字列を集める
+2. **ロード段階（非同期・1 回だけ）** — それらを**モジュールのトップレベル関数**として埋め込んだモジュールを生成し、Worker Loader で動的 Worker を作る
+3. **実行段階（同期）** — 動的 Worker 内ではテーブルを引くだけ。`new Function` も `eval` も登場しない
+
+**非同期になるのはロード段階だけで、式評価そのものは同期のまま**です。`Tournament.execute()` は評価器に委譲するだけなので、同期インタフェースを崩さずに済みます。しかも `Tournament` は **`setEvaluator()` という公開 API** を持ち、`ExpressionEvaluator` インタフェースは `evaluate(code, data)` の 1 メソッドだけなので、**フォークすら不要**です。
+
+**検証結果 — 5 式すべて成功**
+
+| 式 | 結果 |
+|---|---|
+| `{{ 1 + 2 }}` | `3` |
+| `{{ $json.name }}` | `"gizen"` |
+| `Hello {{ $json.name }}, you are {{ $json.age * 2 }}` | `"Hello gizen, you are 42"` |
+| `{{ [1,2,3].map(x => x * 2).join("-") }}` | `"2-4-6"` |
+| `{{ $json.items.filter(i => i.ok).length }}` | `2` |
+
+文字列補間・アロー関数・配列メソッド・`$json` アクセスがいずれも動作。5 式ぶんの生成モジュールは 1,738 bytes でした。
+
+**サンドボックスも機能する**
+
+n8n 本体と同一の AST フック（`ThisSanitizer` / `PrototypeSanitizer` / `DollarSignValidator`）を渡したところ、危険な式は**コンパイル段階で拒否**されました。
+
+| 攻撃的な式 | 遮断メッセージ |
+|---|---|
+| `{{ $json.constructor.constructor("return 1+1")() }}` | `Cannot access "constructor" due to security concerns` |
+| `{{ ({}).__proto__ }}` | `Cannot access "__proto__" due to security concerns` |
+
+**実行時ではなくコンパイル時に落ちる**ため、n8n 本体より前段で防げています。加えて動的 Worker 側で `globalOutbound: null` を指定すれば**式から外部への通信が原理的に不可能**になり、n8n 本来の external task runner より強いサンドボックスが追加実装なしで手に入ります。同じ仕組みで **Code ノードの JS 実行も実装可能**です。
+
+### 4.6 ★ ハマりどころ — esbuild で事前バンドルしてはいけない【実測】
+
+PoC-2 で最初に esbuild を使ったところ、起動時にこれで落ちました。
+
+```
+Uncaught Error: Dynamic require of "fs" is not supported
+  at node_modules/recast/main.js
+  at node_modules/@n8n/tournament/dist/ExpressionBuilder.js
+```
+
+`fs` をスタブ化すると次は `assert` で同じ失敗になります。原因は **Node 組み込みを `external` にすると、ネストした `require()` が esbuild の `__require` シムに落ちて必ず throw する**こと（§3.6 の動的 require 問題）。
+
+**解決策は「esbuild を挟まず wrangler に直接バンドルさせる」**でした。wrangler 内蔵のバンドラは `nodejs_compat` の組み込みモジュール解決を正しく行います。
+
+```jsonc
+{ "main": "src.js", "compatibility_flags": ["nodejs_compat"] }
+```
+
+**本プロジェクトでは事前バンドルを避け、wrangler にビルドさせるのを既定方針とします。**
 
 ---
 
@@ -634,172 +680,181 @@ const w = await env.LOADER.get('expr-1', async () => ({
 
 ---
 
-## 6. 推奨方針
+## 6. 方針の決定
 
-### 6.1 まず PoC を 2 本、並行で走らせる
+### 6.1 経路 A（Containers）を採らない理由 — コスト
 
-方針を先に決めてから検証するのではなく、**方針を決める権利を PoC の結果に委ねます。** どちらも数日で結論が出ます。
+技術的には成立する見込みでしたが、コスト構造が目的に合いませんでした。以下は §3.12 の料金体系に基づく実算です（月 = 730 時間）。
 
-**PoC-1 — Container からの生 TCP アウトバウンド ⚠️最優先**
+**常時起動した場合**
 
-`lite` インスタンスに小さな Node スクリプトを載せ、外部 PostgreSQL（Neon 無料枠）の 5432 へ `pg` で接続し `SELECT 1` を返すだけのものをデプロイします。
+| インスタンス | メモリ | ディスク | CPU | Containers 計 |
+|---|---|---|---|---|
+| `lite`（256MiB/2GB） | $1.42 | $0.32 | $0.60 | **$2.34** |
+| `basic`（1GiB/4GB） | $6.35 | $0.69 | $0.60 | **$7.63** |
+| `standard-1`（4GiB/8GB） | $26.06 | $1.42 | $1.13 | **$28.60** |
+| `standard-2`（6GiB/12GB） | $39.20 | $2.16 | $2.18 | **$43.53** |
 
-- **成功** → 経路 A が成立。リファレンス環境として Phase A へ
-- **失敗** → 経路 A は全滅。Hyperdrive が Containers から使えるかを次に確認し、それも駄目なら**経路 B 一本に絞る**
+これに Neon と Workers Paid が乗ります。
 
-**PoC-2 — Worker Loader による式評価**
+| 構成 | Containers | Neon(Launch 0.25CU) | Workers Paid | 合計 |
+|---|---|---|---|---|
+| `standard-1` | $28.60 | $19.34 | $5 | **約 $53/月** |
+| `basic` | $7.63 | $19.34 | $5 | **約 $32/月** |
 
-`experiments/workerd-n8n-workflow/` を出発点に、`@n8n/tournament` の `FunctionEvaluator` を Worker Loader ベースに差し替え、`={{ 1 + 2 }}` と `={{ $now.year }}` と拡張関数 `={{ "hello world".toSnakeCase() }}` を通します。
+`lite` は 256MiB しかなく n8n（アイドル 300–500MB）が載りません。`basic` の 1GiB も実行時 1–2GB スパイクを考えると **OOM で再起動を繰り返すリスク**があります（Cloudflare は OOM 時に swap を使わずエラーを投げて再起動する仕様）。
 
-- 焦点は **同期 API の非同期化**をどこまで局所的に済ませられるか
-- **`@n8n/tournament` は Apache-2.0** なのでフォークしても License 上いちばん安全
-- **成功** → 経路 B の最大の技術的不確実性が消える
-- **失敗** → 式評価を自前実装するか、式を含まないワークフローに限定するかの判断へ
+**効いているのは 2 点です。** ひとつは Containers の**メモリ課金が provisioned 量に対してかかる**こと（CPU は実稼働分のみなのに、4GiB を確保しているだけで $26）。もうひとつは **Neon も常時起動なら $19** かかること。しかも Neon Free は 100 CU-hours/月しかなく、n8n の `DB_PING_INTERVAL_SECONDS` 既定 2 秒が compute を起こし続けるため scale-to-zero が効かず、**0.25 CU 換算で 400 時間 = 17 日目に停止**します。**Neon の Launch / Scale は基本料 $0・込みの compute 時間ゼロの完全従量制**なので、有料にしても「枠が増える」わけではありません。
 
-### 6.2 PoC の結果を待たずに言えること
+**寝かせれば劇的に安くなります。** `basic` を稼働 24h/月なら無料枠内で $0、96h/月でも $0.69 です。コンテナが寝れば n8n も止まり Neon も Free のままでいけるため、総額は Workers Paid の $5 だけになります。しかしこれは n8n と相性が悪い。**スケジュールトリガーが発火しなくなる**うえ、より深刻なのは**起動時間**です。コンテナのコールドスタート自体は 1〜3 秒でも、n8n が TypeORM 接続・マイグレーション確認・400 以上のノード定義ロードを終えるまでに数十秒かかると見込まれます（**未実測**）。n8n は常駐前提の設計で、スリープ運用と正面から衝突します。
 
-**最終的に目指すべきは経路 B です。** 理由は 4 つあります。
+**結論**: 常時起動なら同等 VPS（月 $4〜5）に負け、寝かせるなら n8n が実用に耐えません。**「Cloudflare で動かす」という目的とコストを同時に満たすのは経路 B だけ**です。
 
-第一に、**経路 A は Cloudflare である必然性がありません。** 月 $27〜30 で ephemeral disk・外部 Postgres 必須・オートスケーリングなし・cold start 1〜3 秒という条件は、同額の VPS に Docker で n8n を立てる方が素直に優れています。「Cloudflare で動かす」という本プロジェクトの目的に対して、経路 A は「Cloudflare 上のコンテナホスティング」でしかありません。
+### 6.2 経路 B が現実的である根拠
 
-第二に、**経路 B の最大の不確実性は実測で既に半分解けています。** バンドルは 570KB で収まり、`Workflow` は構築でき、動的コード実行の代替手段も動きました。残るのは「同期 API の非同期化」という、規模は読めるが性質は明確な作業です。
+**技術的な最大の不確実性は 2 つとも実測で解消済みです。** バンドルは gzip 570KB で収まり（§4.1）、`new Workflow()` は構築でき（§4.2）、最大の壁だった式評価も動きました（§4.5）。残るのはノード実装という「規模は大きいが性質が明確な」作業です。
 
-第三に、**n8n 本家が同じ方向へ動いています。** `@n8n/engine`（`n8n-workflow` にも `n8n-core` にも依存しない、Postgres 専用、キュー駆動、独立デプロイ可能）と `@n8n/scheduler`（DB 永続・リーダーレス・純粋ロジック）は、まさに `packages/cli` の巨大依存を解体するためのものです。経路 B はこの流れに逆らわずに済みます。
+**n8n 本家が同じ方向へ動いています。** `@n8n/engine`（`n8n-workflow` にも `n8n-core` にも依存しない、Postgres 専用、キュー駆動、独立デプロイ可能）と `@n8n/scheduler`（DB 永続・リーダーレス・純粋ロジック）は、まさに `packages/cli` の巨大依存を解体するためのものです（§2.8）。経路 B はこの流れに逆らいません。
 
-第四に、**Dafthunk が経路 B の成立を証明しています。** ゼロから書けば Cloudflare 上でワークフロー自動化基盤は成立します。本プロジェクトの差別化は「**n8n のワークフロー JSON をそのまま受け取れること**」に置けます。
+**Dafthunk が成立を証明しています**（§5.4）。ゼロから書けば Cloudflare 上でワークフロー自動化基盤は成立します。**本プロジェクトの差別化は「n8n のワークフロー JSON をそのまま受け取れること」**に置きます。
 
-**ただし経路 A には固有の価値があります。** それは「n8n 本家の実行結果を正解データとして取れること」です。経路 B のノード実装が本家と同じ出力を返すかを機械的に検証できる環境は、互換性を売りにする以上どうしても要ります。**したがって経路 A は「本番」ではなく「リファレンス環境 / 適合性テストの基準」として位置づけます。**
+### 6.3 コスト — 経路 B なら月 $5
 
-### 6.3 目指す最終形
+| 項目 | 込み枠 | 個人利用での見込み |
+|---|---|---|
+| Workers Paid | — | **$5/月** |
+| Workers リクエスト | 1,000万/月 | 枠内 |
+| Workers CPU | 3,000万 ms/月 | 枠内 |
+| D1 読み取り | 250 億行/月 | 枠内 |
+| D1 書き込み | 5,000 万行/月 | 枠内 |
+| D1 ストレージ | 5 GB | 枠内 |
+| Durable Objects | 100万 req + 400,000 GB-s/月 | 枠内 |
+| R2 | 10 GB + egress 無料 | 枠内 |
+| Static Assets | **リクエスト・ストレージとも無制限無料** | $0 |
+
+**個人利用の規模なら追加課金はほぼ発生せず、$5/月で収まります。** 外部 PostgreSQL（Neon）は不要です。
+
+### 6.4 目指す形
 
 ```
                     ┌──────────────────────────────┐
    ブラウザ ────────▶│ Worker（ルータ + 認証）        │
                     │ Static Assets でエディタ UI 配信 │
-                    └───┬──────────────────────┬───┘
-                        │                      │
-          対応ノードのみ  │                      │ 非対応ノードを含む
-                        ▼                      ▼
-        ┌───────────────────────────┐   ┌──────────────────┐
-        │ Workers ネイティブ実行       │   │ Container の n8n   │
-        │ ・n8n-workflow (570KB)     │   │ （sleepAfter で   │
-        │ ・Worker Loader で式/Code   │   │   普段は寝ている） │
-        │ ・DO で 1実行 = 1オブジェクト │   │  = リファレンス   │
-        │ ・Workflows で長時間実行     │   └──────────────────┘
-        └───────────────────────────┘
+                    └───┬──────────────────────────┘
                         │
-          D1（定義・履歴） / R2（バイナリ） / Cron Triggers
+        ┌───────────────▼───────────────────────────┐
+        │ 実行ランタイム                              │
+        │ ・n8n-workflow (gzip 570KB) をエンジンに    │
+        │ ・式/Code は Worker Loader（globalOutbound  │
+        │   = null で egress 遮断）                   │
+        │ ・1 実行 = 1 Durable Object                 │
+        │ ・長時間実行は Cloudflare Workflows          │
+        └───────────────┬───────────────────────────┘
+                        │
+   D1（ワークフロー定義・実行履歴） / R2（バイナリ） / Cron Triggers
 ```
 
 ---
 
 ## 7. ロードマップ
 
-### Phase 0 — 足場と PoC（最優先）
+### Phase 0 — 足場（Cloudflare アカウント不要、ローカル workerd で進む）
 
-1. Workers Paid プラン有効化（Containers は Paid 必須）
-2. `wrangler.jsonc` でプロジェクト初期化。**新規は jsonc 一択**（公式が「新しい機能は JSON 設定でのみ提供される」と明言）。`compatibility_date` は 2025-09-15 以降、`nodejs_compat` 有効化
-3. **PoC-1**（Container → 外部 Postgres:5432 の生 TCP）
-4. **PoC-2**（Worker Loader 版 `FunctionEvaluator`）
-5. **ライセンス対応**: Sustainable Use License の写しと**改変注記**をリポジトリに配置。`.ee` 由来コードには触れない方針を明文化
-6. CI に **`wrangler check startup`** を組み込む（§3.1 の非決定的 startup 超過への防御）
+1. `wrangler.jsonc` でプロジェクト初期化。**新規は jsonc 一択**（公式が「新しい機能は JSON 設定でのみ提供される」と明言）。`compatibility_date` は 2025-09-15 以降、`nodejs_compat` 有効化
+2. **事前バンドルを禁止し wrangler にビルドさせる**方針をビルド設定に固定（§4.6）
+3. CI に **`wrangler check startup`** を組み込む（§3.1 の非決定的 startup 超過への防御）
+4. **ライセンス対応**: Sustainable Use License の写しと**改変注記**をリポジトリに配置。`.ee` 由来コードには触れない方針を明文化
 
-**Phase 0 の完了条件**: PoC-1 と PoC-2 の結果が出て、経路 A を作るか否かが決まっていること。
+### Phase 1 — 実行エンジンの最小ループ
 
-### Phase A — Containers でリファレンス環境を立てる（PoC-1 成功時のみ）
-
-1. `n8nio/n8n` 公式イメージをベースにした Dockerfile（ネイティブアドオンのビルド済みイメージを使い、自前ビルドは避ける）。**`--platform linux/amd64` を明示**（⚠️ 対応アーキテクチャは公式に明示がなく、amd64 前提が安全）
-2. `wrangler.jsonc` に `containers` / `durable_objects` / `migrations`（`new_sqlite_classes`）を定義。`instance_type` は `standard-1` から
-3. `Container` サブクラス（`defaultPort = 5678`、`sleepAfter`、`envVars`）
-4. 永続層の外部化
-   - `DB_TYPE=postgresdb` + 外部 PostgreSQL（Neon 無料枠）
-   - **`N8N_ENCRYPTION_KEY` を Wrangler Secret で固定**（最重要）
-   - `N8N_DEFAULT_BINARY_DATA_MODE` → R2。**⚠️ Enterprise ライセンス要否を確認**（§2.5）。要るなら `database` モードで代替
-   - **`N8N_COMMUNITY_PACKAGES_ENABLED=false`**
-   - **`N8N_PUSH_BACKEND=sse`**（WebSocket より単純）
-5. Worker 側で `getByName` により**単一インスタンスに固定**（n8n はステートフルなのでロードバランスしてはいけない）
-6. Cloudflare Access で管理 UI を保護
-7. **Worker Cron Trigger でコンテナを起こす**（`sleepAfter` 中は Schedule Trigger が発火しない）
-8. 1 週間運用してメモリ・CPU・ディスクの実消費を計測し instance_type を見直す
-
-**Phase A の完了条件**: エディタが開き、ワークフローを保存でき、コンテナ再起動後も消えず、Webhook とスケジュールの両方が発火すること。
-
-### Phase B-1 — 式評価とワークフロー実行の最小 PoC
-
-1. PoC-2 の成果を `@n8n/tournament` のフォークとして整理（Apache-2.0）
-2. `n8n-workflow` の `Workflow` クラスで最小ワークフロー（Manual Trigger → Set → HTTP Request）を Worker 上で実行
-3. **バンドルサイズと startup 時間を毎回計測**。570KB gzip / 1 秒 startup の余裕がどこで食い潰されるかを追う
-4. D1 にワークフロー定義を保存し、**n8n 本家のエクスポート JSON をそのままインポート**できるようにする
+1. PoC-2 の評価器を `ExpressionEvaluator` 実装として整理し、`Tournament.setEvaluator()` で差し込む（**フォーク不要**）
+2. `n8n-workflow` の `Workflow` クラスで最小ワークフロー（Manual Trigger → Set → HTTP Request）を実行
+3. **バンドルサイズと startup 時間を毎回計測**。570KB gzip / 1 秒 startup の余裕がどこで食い潰されるか追う
+4. 動的 Worker のキャッシュ戦略を決める（`env.LOADER.get(id, ...)` の id をワークフロー ID + 版数にして使い回す）
 
 **⚠️ 撤退ライン**: startup が 1 秒に収まらない、またはバンドルが Paid の 10MB を超える見込みが立った時点で、`n8n-workflow` 全体の取り込みを諦め、式評価（tournament）とワークフロー JSON の型定義のみを借りて実行グラフの走査を自前で書く方向へ切り替えます。
 
-### Phase B-2 — ステート管理とノードサブセット
+### Phase 2 — 永続層とステート
 
-1. **1 実行 = 1 Durable Object**（SQLite バックエンド）で実行状態を保持
-2. 長時間・多ステップ実行は **Cloudflare Workflows** に載せ、リトライと sleep を基盤へ委譲（**ステップ結果は 1 MiB 上限**に注意）
-3. ノード実装の優先順位: Webhook / Schedule / HTTP Request / Set / IF / Switch / Merge / Split In Batches
-4. **declarative-style ノードの description を汎用 fetch ランナーで実行する仕組み**を作る（§5.3）。ここが対応ノード数を一気に伸ばす鍵
-5. Code ノードは **Worker Loader** で実装（`globalOutbound` で egress 制御）
-6. バイナリデータは R2。`node:fs` の VFS は**中間バッファとしてのみ**使う
-7. **同時アウトバウンド接続 6** の制約に合わせて並列度を絞る
-8. エディタ UI は **Workers Static Assets**（無課金）で配信。n8n の `frontend` をそのまま使うなら **`/{{BASE_PATH}}/` の置換**を自前で行う
+1. **D1** にワークフロー定義・実行履歴を保存。**n8n 本家のエクスポート JSON をそのままインポート**できるようにする
+2. **1 実行 = 1 Durable Object**（SQLite バックエンド）で実行状態を保持
+3. 長時間・多ステップ実行は **Cloudflare Workflows** に載せ、リトライと sleep を基盤へ委譲（**ステップ結果は 1 MiB 上限**に注意）
+4. バイナリデータは **R2**。`node:fs` の VFS は**中間バッファとしてのみ**使う
+5. **D1 は DB 単位でシングルスレッド**（§3.10）なので、重いクエリを書かないスキーマ設計にする
 
-### Phase C — 振り分け
+### Phase 3 — ノード実装
 
-1. ワークフロー JSON を静的解析し、含まれるノード型が Worker ネイティブ実装のカバー範囲に収まるか判定
-2. 収まる → Worker で実行 / 収まらない → Container の n8n に委譲
-3. Phase A の環境を**適合性テストの基準**として使い、同じワークフローの実行結果を両者で突き合わせる回帰テストを整備
+1. 優先順位: Webhook / Schedule / HTTP Request / Set / IF / Switch / Merge / Split In Batches
+2. **declarative-style ノードの description を汎用 fetch ランナーで実行する仕組み**（§5.3）。ここが対応ノード数を一気に伸ばす鍵
+3. Code ノードは **Worker Loader** で実装（PoC-2 と同じ仕組み。`globalOutbound: null` で egress 遮断）
+4. スケジュールは **Cron Triggers**（Paid 250）+ DO Alarms
+5. **同時アウトバウンド接続 6** の制約に合わせて並列度を絞る
+
+### Phase 4 — エディタ UI
+
+1. **Workers Static Assets**（リクエスト・ストレージとも無課金）で配信
+2. n8n の `frontend` をそのまま使うなら **`/{{BASE_PATH}}/` の置換**を自前で行う（§2.9）
+3. Push は **SSE**（`sse.push.ts` 相当、1,526 bytes の軽さ）。Workers の `node:http` は `'upgrade'` 非対応のため WebSocket は DO 経由が必要
+
+### Phase 5 — 互換性の担保
+
+1. ワークフロー JSON を静的解析し、含まれるノード型が実装済みかを判定して、未対応なら明示的に落とす
+2. n8n 本家（ローカル Docker で十分）を**適合性テストの基準**として使い、同じワークフローの実行結果を突き合わせる回帰テストを整備
 
 ---
+
 
 ## 8. リスク
 
 **設計上のリスク**
 
-- **`N8N_ENCRYPTION_KEY` の管理ミスは credential の全損に直結。** Phase 0 で Wrangler Secret に固定し、別途バックアップを取ること
-- **D1 は DB 単位でシングルスレッド。** 重いクエリを書くと 10 QPS まで落ちます。個人利用では問題になりませんが、スキーマ設計時に意識が要ります
-- **DO は 1 オブジェクトあたり 1,000 req/秒のソフト上限。** Phase A の単一コンテナ集約構成では上限になりえます
-- **同時アウトバウンド接続 6。** 多数の HTTP Request ノードを並列実行するワークフローで効きます
-- **startup 1 秒超過は非決定的に起きる。** 依存のマイナーアップデートで突然壊れた報告が複数あります。CI での計測が必須
-- **グローバルスコープでの I/O 禁止。** DB クライアントをグローバルにキャッシュする典型パターンが `Cannot perform I/O on behalf of a different request` を引き起こします
+- **D1 は DB 単位でシングルスレッド。** 1ms クエリなら約 1,000 QPS ですが、100ms クエリでは約 10 QPS まで落ちます。個人利用では問題になりませんが、スキーマ設計時に意識が要ります
+- **startup 1 秒超過は非決定的に起きる。** 依存のマイナーアップデートで突然壊れた報告が複数あり、ローカルで通っても本番デプロイで落ちることがあります。**CI での `wrangler check startup` が必須**
+- **バンドルサイズの余裕は思ったより早く消える。** 現状 `n8n-workflow` 単体で gzip 570KB。ノード実装とエディタ資産を足していくと Paid の 10MB に近づきます。**毎ビルドで計測すること**
+- **グローバルスコープでの I/O 禁止。** DB クライアントをグローバルにキャッシュする典型パターンが `Cannot perform I/O on behalf of a different request` を引き起こします。**I/O オブジェクトではなくデータだけ**をグローバルに置くこと
+- **DO は 1 オブジェクトあたり 1,000 req/秒のソフト上限**、**同時アウトバウンド接続は 6**。多数の HTTP Request ノードを並列実行するワークフローで効きます
+- **Workers のタイマーは「最後の I/O 時点」で止まる。** `$now` / `$today` や実行時間計測の挙動に影響します
+- **動的 `import()` は静的解析できる場合のみ。** プラグイン的な遅延ロードは原理的に組めません（§3.6）
 
 **ライセンスのリスク**
 
 - **この成果物を第三者にホスティングサービスとして提供することはできません**（Sustainable Use License）
 - **改変注記の記載義務**があります
-- **R2 へのバイナリデータ外部化は `.ee`（Enterprise）の疑い。** 開発・テスト目的なら無償で触れますが、本番利用には Enterprise ライセンスが必要になる可能性があります
+- `.ee` 由来のコードには触れない方針を守ること。開発・テスト目的なら無償で触れますが、本番利用には Enterprise ライセンスが必要です
 
 **プロジェクト運営上のリスク**
 
-- **n8n 本家が `@n8n/engine` で実行モデルを書き換えている最中です。** 経路 B が現行 `n8n-workflow` の API に深く依存すると、v2 エンジンの完成時に作り直しになる可能性があります。**依存面を薄く保ち、ワークフロー JSON という安定した境界に賭けるべきです**
+- **n8n 本家が `@n8n/engine` で実行モデルを書き換えている最中です**（§2.8）。現行 `n8n-workflow` の API に深く依存すると、v2 エンジンの完成時に作り直しになる可能性があります。**依存面を薄く保ち、ワークフロー JSON という安定した境界に賭けるべきです**
+- **ノード互換性は永久に不完全**です。`n8n-nodes-base` は 400 以上あり、ネイティブ依存を持つものは移植できません。**どのノードが動くかを明示し、未対応は静かに失敗させず明示的に落とす**設計にすること
 
 ---
 
 ## 9. 未確認事項（優先度順）
 
-1. **⚠️最優先: Containers からの生 TCP アウトバウンド（Postgres 5432 / Redis 6379）** — 公式ドキュメント間で矛盾。**PoC-1 で潰す**
-2. **`@n8n/tournament` の同期 API を Worker Loader で非同期化する改造の実現可能性と規模** — **PoC-2 で潰す**
-3. **R2 バイナリデータ外部化の Enterprise ライセンス要否**（`.ee` サフィックス由来の疑い）
-4. **Containers の対応 CPU アーキテクチャ**（amd64 のみか arm64 も可か）— 公式に明示なし
-5. **Containers のリクエストタイムアウト / 最大リクエスト時間** — 公式に明示なし
-6. **Hyperdrive を Containers から使えるか** — ドキュメントは Workers 統合のみを扱う
-7. **`process.version` が Workers 上で返す具体値** — 一次・第三者いずれにも記載なし。起動時 semver ガードを持つライブラリの可否に影響
-8. **`enable_nodejs_fs_module` の既定 compat date** — capnp 2025-09-15 vs docs 2025-09-01
-9. **n8n 2.x のマイグレーションが外部 PostgreSQL に対して初回起動時に正しく走るか**
-10. **Containers のコールドスタート実測値**（`sleepAfter` からの復帰時間）— Webhook の応答性に直結
-11. **D1 read replication の GA 化状況** — 2026-07 時点で GA アナウンス未確認
-12. **「ネイティブアドオン非対応」の明文ステートメント** — workerd Discussion #1905 での Cloudflare の表明（*"Node.js native add-ons are likely never to be supported by workers"*）のみで、ドキュメント本体に記載なし
-13. **Workflows → Containers の呼び出し** — 構造上は可能だが明示したドキュメントページが存在しない
+1. **式拡張関数**（`.toSnakeCase()` 等、`@n8n/expression-runtime` の extensions）が動的 Worker 内で使えるか。PoC-2 は拡張なしの素の式のみ検証済み
+2. **`$now` / `$today`（Luxon 依存）の挙動。** Workers のタイマーが「最後の I/O 時点」で止まる仕様との相互作用
+3. **動的 Worker の生成コスト。** `env.LOADER.get()` のキャッシュがどこまで効くか、ワークフロー更新時の無効化戦略
+4. **Worker Loader の本番挙動。** PoC-2 はローカル workerd での検証であり、**Cloudflare 本番ネットワーク上では未検証**。`unsafe_eval` がローカルで使えなかった前例があるため要確認
+5. **`n8n-workflow` を実際のワークフロー実行まで通したときのバンドルサイズと startup 時間**
+6. **`process.version` が Workers 上で返す具体値** — 一次・第三者いずれにも記載なし。起動時 semver ガードを持つライブラリの可否に影響
+7. **`enable_nodejs_fs_module` の既定 compat date** — capnp 2025-09-15 vs docs 2025-09-01 で食い違い。安全側に 2025-09-15 以降を採用中
+8. **D1 read replication の GA 化状況** — 2026-07 時点で GA アナウンス未確認
+9. **「ネイティブアドオン非対応」の明文ステートメント** — workerd Discussion #1905 での Cloudflare の表明のみで、ドキュメント本体に記載なし
+
+**経路 A を採らないことにしたため、以下は調査を打ち切りました**: Containers からの生 TCP アウトバウンド可否、Containers の対応 CPU アーキテクチャ、Containers のリクエストタイムアウト、Hyperdrive の Containers 対応、Containers のコールドスタート実測値、n8n の外部 PostgreSQL マイグレーション。
+
+なお **Neon については接続経路の検証を実施済み**で、443 のみで完結すること・Node で shim 不要であること・`@n8n/typeorm` が `require('pg')` の差し替えを受け入れることを確認してあります（`experiments/neon-connectivity/`）。**経路 B では使いませんが、将来 Postgres が必要になった場合の資料として残します。**
 
 ---
 
 ## 10. 次のアクション
 
-**Phase 0 の 1〜4 を実施します。** 具体的には Workers Paid を有効化し、`wrangler.jsonc` でプロジェクトを初期化した上で、**PoC-1（Container → 外部 Postgres の生 TCP）と PoC-2（Worker Loader 版 FunctionEvaluator）を並行で走らせます。**
+**Phase 1 に着手します。** PoC-2 の評価器を `ExpressionEvaluator` 実装として整理し、`Tournament.setEvaluator()` 経由で `n8n-workflow` の `Workflow` に差し込んで、最小ワークフロー（Manual Trigger → Set → HTTP Request）を workerd 上で実行するところまでを目標とします。
 
-この 2 つの結果が出るまで、経路 A のイメージ構築にも経路 B の本実装にも着手しません。
+**Cloudflare アカウントは当面不要**です。ローカル workerd（`wrangler dev`）で Phase 1 の大半が進みます。実デプロイと本番での Worker Loader 検証（§9-4）の段階で Workers Paid が必要になります。
 
 ---
+
 
 ## 付録: 出典
 

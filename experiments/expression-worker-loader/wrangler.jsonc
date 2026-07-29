@@ -1,0 +1,7 @@
+{
+  "name": "poc2-expr-worker-loader",
+  "main": "src.js",
+  "compatibility_date": "2025-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "worker_loaders": [{ "binding": "LOADER" }]
+}

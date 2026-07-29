@@ -1,0 +1,41 @@
+{
+ "hasLoader": true,
+ "moduleBytes": 1738,
+ "rejectedBySandbox": {
+  "{{ $json.constructor.constructor(\"return 1+1\")() }}": "Cannot access \"constructor\" due to security concerns",
+  "{{ ({}).__proto__ }}": "Cannot access \"__proto__\" due to security concerns"
+ },
+ "results": {
+  "{{ 1 + 2 }}": {
+   "ok": true,
+   "value": 3,
+   "errors": []
+  },
+  "{{ $json.name }}": {
+   "ok": true,
+   "value": "gizen",
+   "errors": []
+  },
+  "Hello {{ $json.name }}, you are {{ $json.age * 2 }}": {
+   "ok": true,
+   "value": "Hello gizen, you are 42",
+   "errors": []
+  },
+  "{{ [1,2,3].map(x => x * 2).join(\"-\") }}": {
+   "ok": true,
+   "value": "2-4-6",
+   "errors": []
+  },
+  "{{ $json.items.filter(i => i.ok).length }}": {
+   "ok": true,
+   "value": 2,
+   "errors": []
+  },
+  "{{ $json.constructor.constructor(\"return 1+1\")() }}": {
+   "blocked": "Cannot access \"constructor\" due to security concerns"
+  },
+  "{{ ({}).__proto__ }}": {
+   "blocked": "Cannot access \"__proto__\" due to security concerns"
+  }
+ }
+}
