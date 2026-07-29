@@ -1,0 +1,7 @@
+{
+  "name": "n8n-workflow-edge-test",
+  "main": "entry6.js",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "worker_loaders": [{ "binding": "LOADER" }]
+}

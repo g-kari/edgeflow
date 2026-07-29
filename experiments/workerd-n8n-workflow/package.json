@@ -1,0 +1,1 @@
+{"name":"bt","private":true,"type":"module","dependencies":{"esbuild":"^0.28.1","n8n-workflow":"^2.16.0"}}
