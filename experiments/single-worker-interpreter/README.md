@@ -118,7 +118,28 @@ return [1,2].filter(("Boolean" in this ? this : global).Boolean).length;
 
 自己時間の内訳を見ると esbuild の `__require2` シムやモジュール初期化が中心で、突出したホットスポットはありません。
 
-⚠️ **公式が「ローカルのプロファイルは本番の値と一致しない」と明記**しています。過去には**ローカル 270〜410 ms で本番デプロイが `10021` で落ちた**報告もあります。とはいえ 109 ms は当時の失敗事例より大幅に低く、現時点では健全と判断できます。
+### ★ 本番実測（2026-07-30）
+
+実際に Cloudflare へデプロイして確認しました。`wrangler deploy` は **`Worker Startup Time`** を出力します。
+
+```
+Total Upload: 3612.92 KiB / gzip: 627.92 KiB
+Worker Startup Time: 103 ms
+Deployed cf-n8n-single-worker
+  https://cf-n8n-single-worker.0g0.workers.dev
+```
+
+| 環境 | startup |
+|---|---|
+| ローカル（`wrangler check startup`） | 109.0 ms |
+| **本番（`wrangler deploy`）** | **103 ms** |
+| 差 | **6 ms（5.5%）** |
+
+**ローカル計測が本番とほぼ一致しました。** 公式は「一致を期待するな」と注意していますし、過去にローカル 270〜410 ms で本番が `10021` で落ちた報告もありますが、**このワークロードに関してはローカル値を信頼してよい**と実証できました。CI で `wrangler check startup` を回す方針に根拠ができたことになります。
+
+**本番レスポンスもローカルと完全に同一**でした。式の解決値、n8n 忠実な `filter(Boolean)` の挙動、`constructor` の遮断まで一致しています。
+
+なお `wrangler deploy` 直後は workers.dev のルート反映に十数秒かかり、その間は `error code: 1042` / HTTP 404 が返ります。
 
 **ノード実装を積み上げると必ず増える数値なので、CI で継続的に測定すべきです。**
 
