@@ -786,7 +786,20 @@ function validateGraph(wf: Workflow): void {
 
   const inbound = new Map<string, number>(wf.nodes.map((n) => [n.id, 0]));
   for (const e of wf.edges) inbound.set(e.to, (inbound.get(e.to) ?? 0) + 1);
-  const entries = wf.nodes.filter((n) => (inbound.get(n.id) ?? 0) === 0);
+  const outbound = new Map<string, number>(wf.nodes.map((n) => [n.id, 0]));
+  for (const e of wf.edges) outbound.set(e.from, (outbound.get(e.from) ?? 0) + 1);
+
+  // 入次数 0 の孤立ノード（出次数も 0）は「到達不能」として扱うため、
+  // ノードが 1 個だけの自明なワークフローを除きエントリ候補から除外する。
+  // これを除外しないと、孤立ノードがエントリとして誤カウントされ、
+  // 到達不能チェックに到達する前に「エントリノードが 2 個」で落ちる。
+  // エディタでノードを繋ぎ忘れたとき「到達不能なノードがあります: c」と
+  // 出る方が、原因が具体的に分かる。
+  const entries = wf.nodes.filter((n) => {
+    if ((inbound.get(n.id) ?? 0) !== 0) return false;
+    if (wf.nodes.length === 1) return true;
+    return (outbound.get(n.id) ?? 0) > 0;
+  });
   if (entries.length !== 1) {
     throw new SchemaError(`エントリノードはちょうど 1 つ必要です（現在 ${entries.length} 個）`);
   }
