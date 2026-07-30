@@ -81,10 +81,10 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.6.0",
-    "@cloudflare/workers-types": "^4.20250909.0",
+    "@cloudflare/vitest-pool-workers": "^0.19.0",
+    "@cloudflare/workers-types": "^5.20260722.1",
     "typescript": "^5.7.0",
-    "vitest": "^2.1.0",
+    "vitest": "^4.1.0",
     "wrangler": "^4.115.0"
   }
 }
@@ -144,21 +144,24 @@ Run: `npx wrangler r2 bucket create edgeflow-payloads`
 
 - [ ] **Step 6: vitest.config.ts を作る**
 
-```ts
-import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
+`@cloudflare/vitest-pool-workers` は **0.13.0 で `./config` export（`defineWorkersConfig`）が削除され**、plugin ベースの `cloudflareTest` に変わっている。0.19.0 の型定義に合わせて書く。
 
-export default defineWorkersConfig({
-  test: {
-    globals: true,
-    poolOptions: {
-      workers: {
-        wrangler: { configPath: './wrangler.jsonc' },
-        miniflare: { compatibilityFlags: ['nodejs_compat'] },
-      },
-    },
-  },
+```ts
+import { cloudflareTest } from '@cloudflare/vitest-pool-workers';
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  plugins: [
+    cloudflareTest({
+      wrangler: { configPath: './wrangler.jsonc' },
+      miniflare: { compatibilityFlags: ['nodejs_compat'] },
+    }),
+  ],
+  test: { globals: true },
 });
 ```
+
+`tsconfig.json` の `types` に `@cloudflare/vitest-pool-workers/types` を、`include` に `worker-configuration.d.ts` を足す必要がある。
 
 - [ ] **Step 7: 失敗するテストを書く**
 
