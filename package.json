@@ -1,0 +1,28 @@
+{
+  "name": "edgeflow",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "size": "wrangler deploy --dry-run --outdir=dist",
+    "startup": "wrangler check startup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "db:migrate": "wrangler d1 migrations apply DB --local",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote"
+  },
+  "dependencies": {
+    "@n8n/tournament": "1.8.1",
+    "esprima-next": "5.8.4",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.19.0",
+    "@cloudflare/workers-types": "^5.20260722.1",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.115.0"
+  }
+}

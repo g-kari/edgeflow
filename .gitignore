@@ -4,3 +4,9 @@
 
 # worktree
 .claude/worktrees/
+
+node_modules/
+dist/
+.wrangler/
+*.cpuprofile
+.dev.vars

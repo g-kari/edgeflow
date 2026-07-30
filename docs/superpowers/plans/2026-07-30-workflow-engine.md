@@ -2351,7 +2351,7 @@ git commit -m "エンドツーエンド確認と利用手順"
 
 | タスク | gzip サイズ | startup（ローカル） | startup（本番） |
 |---|---|---|---|
-| Task 1 | | | ー |
+| Task 1 | 5.37 KiB | 20.5 ms | ー |
 | Task 3 | | ー | ー |
 | Task 11 | | | |
 
