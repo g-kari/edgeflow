@@ -57,4 +57,18 @@ describe('ExpressionEvaluator', () => {
     const ev = new ExpressionEvaluator();
     expect(() => ev.evaluate('{{ $json.missing.deep }}', scope())).toThrow(/式の評価に失敗/);
   });
+
+  it('複数チャンクのエラーを全件メッセージに残し cause で元の Error を保持する', () => {
+    const ev = new ExpressionEvaluator();
+    try {
+      ev.evaluate('{{ $json.a.b }} と {{ $json.c.d }}', scope());
+      throw new Error('例外が投げられなかった');
+    } catch (e) {
+      const err = e as Error & { cause?: unknown };
+      // 2 件とも message に現れる
+      expect(err.message.split(' / ').length).toBeGreaterThanOrEqual(2);
+      // 元の Error が cause で辿れる
+      expect(err.cause).toBeInstanceOf(Error);
+    }
+  });
 });

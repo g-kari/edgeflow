@@ -10,8 +10,10 @@ export type ExpressionScope = {
 };
 
 export class ExpressionError extends Error {
-  constructor(message: string, readonly template: string) {
-    super(message);
+  constructor(message: string, readonly template: string, cause?: unknown) {
+    // cause で元の Error を保持する。定期バッチは人が見ていないため、
+    // 後から原因を辿れることが唯一の救いになる。
+    super(message, { cause });
     this.name = 'ExpressionError';
   }
 }
@@ -33,8 +35,15 @@ export class ExpressionEvaluator {
     const errors: unknown[] = [];
     const value = run(compiled, scope, (e) => errors.push(e));
     if (errors.length > 0) {
-      const first = errors[0] as Error;
-      throw new ExpressionError(`式の評価に失敗しました: ${first?.message ?? String(first)}`, template);
+      // tournament は式チャンクごとに個別の try/catch で E() を呼ぶため、
+      // "{{ bad1 }} {{ bad2 }}" のような複数チャンクでは 2 件以上溜まる。
+      // 1 件目だけ残して捨てると 2 件目以降の原因が完全に消える。
+      const messages = errors.map((e) => (e as Error)?.message ?? String(e));
+      throw new ExpressionError(
+        `式の評価に失敗しました: ${messages.join(' / ')}`,
+        template,
+        errors[0],
+      );
     }
     return value;
   }
