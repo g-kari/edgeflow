@@ -1,4 +1,3 @@
-import type { Env } from './index';
 import { parseWorkflow, type Workflow } from './schema';
 
 const INLINE_LIMIT_BYTES = 512 * 1024;
@@ -8,8 +7,13 @@ export type StepOutput =
   | { kind: 'inline'; value: unknown }
   | { kind: 'r2'; key: string; bytes: number };
 
+export type StorageEnv = {
+  DB: D1Database;
+  BUCKET: R2Bucket;
+};
+
 export class Storage {
-  constructor(private readonly env: Env) {}
+  constructor(private readonly env: StorageEnv) {}
 
   async loadWorkflow(id: string): Promise<Workflow> {
     const row = await this.env.DB

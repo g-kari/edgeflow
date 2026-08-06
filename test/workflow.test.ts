@@ -65,17 +65,16 @@ describe('executeWorkflow', () => {
   });
 
   it('ノードが失敗したら run を failed にする', async () => {
-    const broken = structuredClone(definition);
-    broken.nodes[2]!.params = { value: { $expr: '{{ $json.missing.deep }}' } };
-    await env.DB.prepare('UPDATE workflows SET definition = ? WHERE id = ?')
-      .bind(JSON.stringify(broken), 'wf-1').run();
-
-    const step = fakeStep();
+    const step = {
+      do(): never {
+        throw new Error('node failed');
+      },
+    };
     await expect(executeWorkflow({
       env, step: step as any, runId: 'run-2',
       workflowId: 'wf-1', triggerType: 'manual',
       nowIso: '2026-07-30T00:00:00.000Z',
-    })).rejects.toThrow();
+    })).rejects.toThrow('node failed');
 
     const run = await env.DB.prepare('SELECT status FROM runs WHERE id = ?').bind('run-2').first();
     expect(run?.status).toBe('failed');

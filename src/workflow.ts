@@ -5,13 +5,13 @@ import { ExpressionEvaluator, type ExpressionScope } from './expression';
 import { ExecutionPlanner } from './graph';
 import { NODE_IMPLS } from './nodes';
 import type { ParamValue, Workflow, WorkflowNode } from './schema';
-import { Storage } from './storage';
+import { Storage, type StorageEnv } from './storage';
 import type { Env } from './index';
 
 export type WorkflowParams = { workflowId: string; triggerType: 'cron' | 'manual' };
 
 export type ExecuteDeps = {
-  env: Env;
+  env: StorageEnv;
   step: Pick<WorkflowStep, 'do'>;
   runId: string;
   workflowId: string;
@@ -62,7 +62,7 @@ export async function executeWorkflow(deps: ExecuteDeps): Promise<void> {
           },
           timeout: '2 minutes',
         },
-        async () => runNode(wf, current, evaluator, {
+        async (): Promise<any> => runNode(wf, current, evaluator, {
           $json: lastOutput,
           $nodes: outputs,
           $secrets: secretsOf(env),
@@ -141,7 +141,7 @@ function isExpr(v: ParamValue): v is { $expr: string } {
 }
 
 // Wrangler Secrets は env に文字列として現れる。バインディング（DB / BUCKET / EXECUTE）は除く。
-function secretsOf(env: Env): Record<string, string> {
+function secretsOf(env: object): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(env as Record<string, unknown>)) {
     if (typeof v === 'string') out[k] = v;
