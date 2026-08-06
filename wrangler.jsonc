@@ -14,5 +14,6 @@
   "workflows": [
     { "binding": "EXECUTE", "name": "edgeflow", "class_name": "EdgeflowWorkflow" }
   ],
+  "triggers": { "crons": ["*/15 * * * *"] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": [] }]
 }
