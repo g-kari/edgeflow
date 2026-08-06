@@ -5,6 +5,7 @@
 定期実行のバッチ（cron で API を叩き、加工し、通知する）を主な用途として、ゼロから設計・実装しています。将来的にはビジュアルエディタまで作りますが、まずは実行エンジンから積み上げています。
 
 現在の設計は **[docs/superpowers/specs/2026-07-30-workflow-engine-design.md](./docs/superpowers/specs/2026-07-30-workflow-engine-design.md)** にあります。
+セットアップ、定義登録、手動実行、履歴確認は **[docs/USAGE.md](./docs/USAGE.md)** を参照してください。
 
 ---
 

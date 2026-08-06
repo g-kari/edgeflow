@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "id": "daily-report",
+  "name": "daily-report",
+  "trigger": { "type": "cron", "cron": "0 9 * * *" },
+  "nodes": [
+    {
+      "id": "fetch",
+      "type": "http",
+      "name": "Fetch",
+      "params": {
+        "url": "https://api.github.com/repos/cloudflare/workerd",
+        "headers": { "user-agent": "edgeflow" }
+      }
+    },
+    {
+      "id": "check",
+      "type": "if",
+      "name": "HasStars",
+      "params": { "condition": { "$expr": "{{ $json.body.stargazers_count > 0 }}" } }
+    },
+    {
+      "id": "compose",
+      "type": "transform",
+      "name": "Compose",
+      "params": {
+        "value": {
+          "$expr": "workerd は {{ $nodes['Fetch'].body.stargazers_count }} スターです（{{ $now.iso }}）"
+        }
+      }
+    },
+    {
+      "id": "post",
+      "type": "notify",
+      "name": "Post",
+      "params": {
+        "webhookUrl": { "$expr": "{{ $secrets.SLACK_WEBHOOK_URL }}" },
+        "text": { "$expr": "{{ $json }}" }
+      }
+    }
+  ],
+  "edges": [
+    { "from": "fetch", "to": "check" },
+    { "from": "check", "to": "compose", "branch": "true" },
+    { "from": "compose", "to": "post" }
+  ]
+}

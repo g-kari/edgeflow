@@ -79,7 +79,7 @@ Workers のタイマーは**「最後の I/O 時点」で止まる**。ノード
 ```bash
 npm run size      # gzip サイズ
 npm run startup   # startup プロファイル生成
-node -e "const p=require('./worker-startup.cpuprofile');console.log(((p.endTime-p.startTime)/1000).toFixed(1)+' ms')"
+node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('worker-startup.cpuprofile','utf8'));console.log(((p.endTime-p.startTime)/1000).toFixed(1)+' ms')"
 ```
 
 **依存を足したら必ず測る。** startup 超過は依存のマイナーアップデートだけで非決定的に起きる報告がある。

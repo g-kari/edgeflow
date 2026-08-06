@@ -231,7 +231,7 @@ Run: `npm run startup`
 記録: 生成された `worker-startup.cpuprofile` から総時間を求める。
 
 ```bash
-node -e "const p=require('./worker-startup.cpuprofile');console.log(((p.endTime-p.startTime)/1000).toFixed(1)+' ms')"
+node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('worker-startup.cpuprofile','utf8'));console.log(((p.endTime-p.startTime)/1000).toFixed(1)+' ms')"
 ```
 
 - [ ] **Step 12: .gitignore を作ってコミット**
@@ -2392,7 +2392,7 @@ git commit -m "エンドツーエンド確認と利用手順"
 |---|---|---|---|
 | Task 1 | 5.37 KiB | 20.5 ms | ー |
 | Task 3 | | ー | ー |
-| Task 11 | | | |
+| Task 11 | 249.00 KiB | 50.1 ms | 未計測 |
 
 **上限**: gzip 10 MB / startup 1,000 ms。参考値として、`n8n-workflow` を含む調査時点の実測は gzip 627.92 KiB / 本番 103 ms だった。本計画では `n8n-workflow` を外すため、これより小さくなる見込み。
 
