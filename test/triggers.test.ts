@@ -55,3 +55,25 @@ describe('POST /runs', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('scheduled', () => {
+  it('cron が設定されたワークフローを起動する', async () => {
+    await env.DB.prepare('UPDATE workflows SET cron = ? WHERE id = ?')
+      .bind('*/15 * * * *', 'wf-1').run();
+    const create = vi.fn(async () => ({ id: 'cron-run-1' }));
+    const testEnv = { DB: env.DB, BUCKET: env.BUCKET, EXECUTE: { create } } as unknown as Env;
+    const pending: Promise<unknown>[] = [];
+    const ctx = {
+      waitUntil(promise: Promise<unknown>) {
+        pending.push(promise);
+      },
+    } as ExecutionContext;
+
+    await worker.scheduled({} as ScheduledController, testEnv, ctx);
+    await Promise.all(pending);
+
+    expect(create).toHaveBeenCalledWith({
+      params: { workflowId: 'wf-1', triggerType: 'cron' },
+    });
+  });
+});
