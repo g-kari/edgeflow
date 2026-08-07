@@ -2222,7 +2222,7 @@ git commit -m "cron トリガーと手動実行エンドポイント"
       "id": "post",
       "type": "notify",
       "name": "Post",
-      "params": { "webhookUrl": { "$expr": "{{ $secrets.SLACK_WEBHOOK_URL }}" }, "text": { "$expr": "{{ $json }}" } }
+      "params": { "webhookUrl": { "$expr": "{{ $secrets.DISCORD_WEBHOOK_URL }}" }, "text": { "$expr": "{{ $json }}" } }
     }
   ],
   "edges": [
@@ -2319,7 +2319,7 @@ gzip 値と startup ms を記録表に追記する。**gzip が 10 MB を超え�
 
 ```bash
 npx wrangler d1 migrations apply DB --remote
-npx wrangler secret put SLACK_WEBHOOK_URL
+npx wrangler secret put DISCORD_WEBHOOK_URL
 npx wrangler deploy
 ```
 
@@ -2340,7 +2340,7 @@ curl -X POST https://edgeflow.<subdomain>.workers.dev/runs \
   -d '{"workflowId":"daily-report"}'
 ```
 
-`runId` が返り、Slack に通知が届き、`runs` テーブルに `success` が入ることを確認する。
+`runId` が返り、Discord に通知が届き、`runs` テーブルに `success` が入ることを確認する。
 
 - [ ] **Step 8: USAGE.md を書く**
 
@@ -2357,7 +2357,7 @@ curl -X POST https://edgeflow.<subdomain>.workers.dev/runs \
 
 **式変数の表**: `$json`（直前の出力）、`$nodes['名前']`（任意ノードの出力）、`$secrets.NAME`、`$now.iso` / `$now.date`、`$run.id` / `$run.workflowName`。`$json` は `http` ノードの後なら `{ status, headers, body }` の形である点を明記する。
 
-**Secrets の登録**: `npx wrangler secret put SLACK_WEBHOOK_URL`
+**Secrets の登録**: `npx wrangler secret put DISCORD_WEBHOOK_URL`
 
 **定義の登録**: `npx wrangler d1 execute DB --remote --command "INSERT INTO workflows ..."` の実例を 1 本載せる。
 
@@ -2403,7 +2403,7 @@ git commit -m "エンドツーエンド確認と利用手順"
 - `npm test` が全件 PASS する
 - `npm run typecheck` がエラーなし
 - 本番にデプロイでき、`Worker Startup Time` が 1,000 ms を大きく下回る
-- `POST /runs` で `fixtures/daily-report.json` が実行され、Slack に通知が届く
+- `POST /runs` で `fixtures/daily-report.json` が実行され、Discord に通知が届く
 - `runs` と `run_steps` に履歴が残り、スキップされたノードが `skipped` として記録されている
 
 ## 積み残し（次のサブプロジェクトへ）

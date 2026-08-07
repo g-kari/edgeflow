@@ -49,7 +49,7 @@ describe('daily-report ワークフロー', () => {
     const workflowEnv = {
       DB: env.DB,
       BUCKET: env.BUCKET,
-      SLACK_WEBHOOK_URL: 'https://hooks.example.test/demo',
+      DISCORD_WEBHOOK_URL: 'https://discord.com/api/webhooks/demo/token',
     };
     await executeWorkflow({
       env: workflowEnv,

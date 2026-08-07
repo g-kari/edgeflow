@@ -11,10 +11,15 @@ export const notifyNode: NodeImpl = async (ctx) => {
     throw new NonRetryableError(`webhookUrl は https でなければなりません: ${webhookUrl}`);
   }
 
+  const hostname = new URL(webhookUrl).hostname;
+  const body = hostname === 'discord.com' || hostname.endsWith('.discord.com')
+    ? { content: text, allowed_mentions: { parse: [] } }
+    : { text };
+
   const res = await fetch(webhookUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {

@@ -10,7 +10,10 @@ const ctx = (params: Record<string, unknown>, input: unknown = {}): NodeContext 
 
 const mockFetch = (status: number, body: string, contentType = 'application/json') => {
   const spy = vi.fn(async () =>
-    new Response(body, { status, headers: { 'content-type': contentType } })) as any;
+    new Response(status === 204 ? null : body, {
+      status,
+      headers: { 'content-type': contentType },
+    })) as any;
   vi.stubGlobal('fetch', spy);
   return spy;
 };
@@ -71,6 +74,19 @@ describe('notify ノード', () => {
     expect(init.method).toBe('POST');
     expect(init.body).toBe(JSON.stringify({ text: 'hi' }));
     expect(r.output).toMatchObject({ status: 200 });
+  });
+
+  it('Discord には content を送り、メンションを無効化する', async () => {
+    const spy = mockFetch(204, '', 'text/plain');
+    await NODE_IMPLS.notify(ctx({
+      webhookUrl: 'https://discord.com/api/webhooks/123/token',
+      text: '@everyone hi',
+    }));
+    const init = spy.mock.calls[0]?.[1] as unknown as RequestInit;
+    expect(init.body).toBe(JSON.stringify({
+      content: '@everyone hi',
+      allowed_mentions: { parse: [] },
+    }));
   });
 
   it('https 以外の webhookUrl を拒否する', async () => {

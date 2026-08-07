@@ -34,7 +34,7 @@
       "type": "notify",
       "name": "Post",
       "params": {
-        "webhookUrl": { "$expr": "{{ $secrets.SLACK_WEBHOOK_URL }}" },
+        "webhookUrl": { "$expr": "{{ $secrets.DISCORD_WEBHOOK_URL }}" },
         "text": { "$expr": "{{ $json }}" }
       }
     }

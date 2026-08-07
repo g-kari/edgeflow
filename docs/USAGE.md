@@ -33,7 +33,7 @@ Cloudflare Access などで保護してください。
 ```bash
 npm install
 npm run db:migrate:remote
-npx wrangler secret put SLACK_WEBHOOK_URL
+npx wrangler secret put DISCORD_WEBHOOK_URL
 npm run deploy
 ```
 
@@ -46,6 +46,9 @@ DEFINITION="$(node -e "const fs=require('node:fs'); const s=fs.readFileSync('fix
 npx wrangler d1 execute DB --remote --command \
   "INSERT INTO workflows (id,name,definition,cron,enabled,updated_at) VALUES ('daily-report','daily-report','$DEFINITION','0 9 * * *',1,datetime('now'))"
 ```
+
+Discord のWebhook URLはリポジトリやワークフロー定義へ直接書かず、上記Secretへ登録します。
+Discord通知では意図しない `@everyone` などを防ぐため、メンション解釈を無効化します。
 
 `wrangler.jsonc` の Cron Trigger は15分ごとに起動します。D1 の `cron` 列が設定された
 有効なワークフローが対象です。現在は D1 側の cron 式を個別評価しないため、登録した
