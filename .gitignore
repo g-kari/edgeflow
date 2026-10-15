@@ -1,0 +1,12 @@
+
+# SDD の作業領域（git 管理外）
+.superpowers/
+
+# worktree
+.claude/worktrees/
+
+node_modules/
+dist/
+.wrangler/
+*.cpuprofile
+.dev.vars

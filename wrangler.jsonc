@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "edgeflow",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "edgeflow", "database_id": "a7635334-8d4f-465f-a097-84e5f5e8674b" }
+  ],
+  "r2_buckets": [
+    { "binding": "BUCKET", "bucket_name": "edgeflow-payloads" }
+  ],
+  "workflows": [
+    { "binding": "EXECUTE", "name": "edgeflow", "class_name": "EdgeflowWorkflow" }
+  ],
+  "triggers": { "crons": ["*/15 * * * *"] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": [] }]
+}

@@ -81,10 +81,10 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.6.0",
-    "@cloudflare/workers-types": "^4.20250909.0",
+    "@cloudflare/vitest-pool-workers": "^0.19.0",
+    "@cloudflare/workers-types": "^5.20260722.1",
     "typescript": "^5.7.0",
-    "vitest": "^2.1.0",
+    "vitest": "^4.1.0",
     "wrangler": "^4.115.0"
   }
 }
@@ -144,21 +144,24 @@ Run: `npx wrangler r2 bucket create edgeflow-payloads`
 
 - [ ] **Step 6: vitest.config.ts を作る**
 
-```ts
-import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
+`@cloudflare/vitest-pool-workers` は **0.13.0 で `./config` export（`defineWorkersConfig`）が削除され**、plugin ベースの `cloudflareTest` に変わっている。0.19.0 の型定義に合わせて書く。
 
-export default defineWorkersConfig({
-  test: {
-    globals: true,
-    poolOptions: {
-      workers: {
-        wrangler: { configPath: './wrangler.jsonc' },
-        miniflare: { compatibilityFlags: ['nodejs_compat'] },
-      },
-    },
-  },
+```ts
+import { cloudflareTest } from '@cloudflare/vitest-pool-workers';
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  plugins: [
+    cloudflareTest({
+      wrangler: { configPath: './wrangler.jsonc' },
+      miniflare: { compatibilityFlags: ['nodejs_compat'] },
+    }),
+  ],
+  test: { globals: true },
 });
 ```
+
+`tsconfig.json` の `types` に `@cloudflare/vitest-pool-workers/types` を、`include` に `worker-configuration.d.ts` を足す必要がある。
 
 - [ ] **Step 7: 失敗するテストを書く**
 
@@ -228,7 +231,7 @@ Run: `npm run startup`
 記録: 生成された `worker-startup.cpuprofile` から総時間を求める。
 
 ```bash
-node -e "const p=require('./worker-startup.cpuprofile');console.log(((p.endTime-p.startTime)/1000).toFixed(1)+' ms')"
+node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('worker-startup.cpuprofile','utf8'));console.log(((p.endTime-p.startTime)/1000).toFixed(1)+' ms')"
 ```
 
 - [ ] **Step 12: .gitignore を作ってコミット**
@@ -469,6 +472,20 @@ describe('ExpressionEvaluator', () => {
     const ev = new ExpressionEvaluator();
     expect(() => ev.evaluate('{{ $json.missing.deep }}', scope())).toThrow(/式の評価に失敗/);
   });
+
+  it('複数チャンクのエラーを全件メッセージに残し cause で元の Error を保持する', () => {
+    const ev = new ExpressionEvaluator();
+    try {
+      ev.evaluate('{{ $json.a.b }} と {{ $json.c.d }}', scope());
+      throw new Error('例外が投げられなかった');
+    } catch (e) {
+      const err = e as Error & { cause?: unknown };
+      // 2 件とも message に現れる
+      expect(err.message.split(' / ').length).toBeGreaterThanOrEqual(2);
+      // 元の Error が cause で辿れる
+      expect(err.cause).toBeInstanceOf(Error);
+    }
+  });
 });
 ```
 
@@ -492,8 +509,10 @@ export type ExpressionScope = {
 };
 
 export class ExpressionError extends Error {
-  constructor(message: string, readonly template: string) {
-    super(message);
+  constructor(message: string, readonly template: string, cause?: unknown) {
+    // cause で元の Error を保持する。定期バッチは人が見ていないため、
+    // 後から原因を辿れることが唯一の救いになる。
+    super(message, { cause });
     this.name = 'ExpressionError';
   }
 }
@@ -515,8 +534,15 @@ export class ExpressionEvaluator {
     const errors: unknown[] = [];
     const value = run(compiled, scope, (e) => errors.push(e));
     if (errors.length > 0) {
-      const first = errors[0] as Error;
-      throw new ExpressionError(`式の評価に失敗しました: ${first?.message ?? String(first)}`, template);
+      // tournament は式チャンクごとに個別の try/catch で E() を呼ぶため、
+      // "{{ bad1 }} {{ bad2 }}" のような複数チャンクでは 2 件以上溜まる。
+      // 1 件目だけ残して捨てると 2 件目以降の原因が完全に消える。
+      const messages = errors.map((e) => (e as Error)?.message ?? String(e));
+      throw new ExpressionError(
+        `式の評価に失敗しました: ${messages.join(' / ')}`,
+        template,
+        errors[0],
+      );
     }
     return value;
   }
@@ -760,7 +786,20 @@ function validateGraph(wf: Workflow): void {
 
   const inbound = new Map<string, number>(wf.nodes.map((n) => [n.id, 0]));
   for (const e of wf.edges) inbound.set(e.to, (inbound.get(e.to) ?? 0) + 1);
-  const entries = wf.nodes.filter((n) => (inbound.get(n.id) ?? 0) === 0);
+  const outbound = new Map<string, number>(wf.nodes.map((n) => [n.id, 0]));
+  for (const e of wf.edges) outbound.set(e.from, (outbound.get(e.from) ?? 0) + 1);
+
+  // 入次数 0 の孤立ノード（出次数も 0）は「到達不能」として扱うため、
+  // ノードが 1 個だけの自明なワークフローを除きエントリ候補から除外する。
+  // これを除外しないと、孤立ノードがエントリとして誤カウントされ、
+  // 到達不能チェックに到達する前に「エントリノードが 2 個」で落ちる。
+  // エディタでノードを繋ぎ忘れたとき「到達不能なノードがあります: c」と
+  // 出る方が、原因が具体的に分かる。
+  const entries = wf.nodes.filter((n) => {
+    if ((inbound.get(n.id) ?? 0) !== 0) return false;
+    if (wf.nodes.length === 1) return true;
+    return (outbound.get(n.id) ?? 0) > 0;
+  });
   if (entries.length !== 1) {
     throw new SchemaError(`エントリノードはちょうど 1 つ必要です（現在 ${entries.length} 個）`);
   }
@@ -2183,7 +2222,7 @@ git commit -m "cron トリガーと手動実行エンドポイント"
       "id": "post",
       "type": "notify",
       "name": "Post",
-      "params": { "webhookUrl": { "$expr": "{{ $secrets.SLACK_WEBHOOK_URL }}" }, "text": { "$expr": "{{ $json }}" } }
+      "params": { "webhookUrl": { "$expr": "{{ $secrets.DISCORD_WEBHOOK_URL }}" }, "text": { "$expr": "{{ $json }}" } }
     }
   ],
   "edges": [
@@ -2280,7 +2319,7 @@ gzip 値と startup ms を記録表に追記する。**gzip が 10 MB を超え�
 
 ```bash
 npx wrangler d1 migrations apply DB --remote
-npx wrangler secret put SLACK_WEBHOOK_URL
+npx wrangler secret put DISCORD_WEBHOOK_URL
 npx wrangler deploy
 ```
 
@@ -2301,7 +2340,7 @@ curl -X POST https://edgeflow.<subdomain>.workers.dev/runs \
   -d '{"workflowId":"daily-report"}'
 ```
 
-`runId` が返り、Slack に通知が届き、`runs` テーブルに `success` が入ることを確認する。
+`runId` が返り、Discord に通知が届き、`runs` テーブルに `success` が入ることを確認する。
 
 - [ ] **Step 8: USAGE.md を書く**
 
@@ -2318,7 +2357,7 @@ curl -X POST https://edgeflow.<subdomain>.workers.dev/runs \
 
 **式変数の表**: `$json`（直前の出力）、`$nodes['名前']`（任意ノードの出力）、`$secrets.NAME`、`$now.iso` / `$now.date`、`$run.id` / `$run.workflowName`。`$json` は `http` ノードの後なら `{ status, headers, body }` の形である点を明記する。
 
-**Secrets の登録**: `npx wrangler secret put SLACK_WEBHOOK_URL`
+**Secrets の登録**: `npx wrangler secret put DISCORD_WEBHOOK_URL`
 
 **定義の登録**: `npx wrangler d1 execute DB --remote --command "INSERT INTO workflows ..."` の実例を 1 本載せる。
 
@@ -2351,9 +2390,9 @@ git commit -m "エンドツーエンド確認と利用手順"
 
 | タスク | gzip サイズ | startup（ローカル） | startup（本番） |
 |---|---|---|---|
-| Task 1 | | | ー |
+| Task 1 | 5.37 KiB | 20.5 ms | ー |
 | Task 3 | | ー | ー |
-| Task 11 | | | |
+| Task 11 | 249.07 KiB | 54.5 ms | 54 ms |
 
 **上限**: gzip 10 MB / startup 1,000 ms。参考値として、`n8n-workflow` を含む調査時点の実測は gzip 627.92 KiB / 本番 103 ms だった。本計画では `n8n-workflow` を外すため、これより小さくなる見込み。
 
@@ -2364,7 +2403,7 @@ git commit -m "エンドツーエンド確認と利用手順"
 - `npm test` が全件 PASS する
 - `npm run typecheck` がエラーなし
 - 本番にデプロイでき、`Worker Startup Time` が 1,000 ms を大きく下回る
-- `POST /runs` で `fixtures/daily-report.json` が実行され、Slack に通知が届く
+- `POST /runs` で `fixtures/daily-report.json` が実行され、Discord に通知が届く
 - `runs` と `run_steps` に履歴が残り、スキップされたノードが `skipped` として記録されている
 
 ## 積み残し（次のサブプロジェクトへ）
