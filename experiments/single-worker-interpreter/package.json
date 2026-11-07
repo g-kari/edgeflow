@@ -8,7 +8,7 @@
     "size": "wrangler deploy --dry-run --outdir=dist"
   },
   "dependencies": {
-    "@n8n/tournament": "1.8.1",
+    "@n8n/tournament": "1.15.0",
     "esprima-next": "5.8.4",
     "n8n-workflow": "2.47.0"
   }
