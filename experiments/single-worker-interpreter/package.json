@@ -10,6 +10,6 @@
   "dependencies": {
     "@n8n/tournament": "1.15.0",
     "esprima-next": "6.0.3",
-    "n8n-workflow": "3.0.0"
+    "n8n-workflow": "3.0.1"
   }
 }
