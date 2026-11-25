@@ -7,7 +7,7 @@
     "dev": "wrangler dev"
   },
   "dependencies": {
-    "n8n-workflow": "2.48.0",
+    "n8n-workflow": "2.48.1",
     "@n8n/tournament": "1.16.0"
   }
 }
